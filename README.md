@@ -125,9 +125,17 @@ beacon to be sent, and *then* redirects to `url`. A safety timer
 prompt or slow network never traps the visitor. The `keepalive` fetch also
 means the beacon survives the navigation.
 
+**Always guard the handler with `if (window.WDC)` before calling
+`event.preventDefault()`.** If the tracking server is down (or the
+`track.js` request is blocked or times out), `window.WDC` is never defined.
+Guarding means the click falls through to the link's normal navigation and
+the visitor still reaches `url` silently — they never notice tracking failed.
+Without the guard, `WDC.trackAndGo` throws *after* `preventDefault()` has
+already cancelled the navigation, and the link does nothing.
+
 ```html
 <a href="https://example.com/resume.pdf"
-   onclick="event.preventDefault(); WDC.trackAndGo('resume_download', this.href, { requestGps: true })">
+   onclick="if (window.WDC) { event.preventDefault(); WDC.trackAndGo('resume_download', this.href, { requestGps: true }); }">
   Resume
 </a>
 ```
@@ -211,8 +219,10 @@ is used instead of the proxy's IP. Run it long-term with `pm2` or a
 ## 8. Where the data lives
 
 Each site's events append to `data/events/<siteId>.json` as a JSON array.
-Nothing rotates or prunes automatically — trim/archive these files
-yourself as they grow.
+Each file is capped at `maxEventsPerSite` events (`config/config.json`,
+default 10000): once full, the oldest events are dropped as new ones arrive,
+so a file can't grow without bound. Set it to `0` to disable the cap (and
+trim/archive the files yourself).
 
 ## Endpoints
 

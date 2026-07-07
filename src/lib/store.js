@@ -1,8 +1,12 @@
 const fs = require('fs');
 const path = require('path');
-const { ROOT } = require('./config');
+const { ROOT, getConfig } = require('./config');
 
 const EVENTS_DIR = path.join(ROOT, 'data', 'events');
+
+// Fallback cap if config omits maxEventsPerSite; keeps a per-site log from
+// growing without bound.
+const DEFAULT_MAX_EVENTS_PER_SITE = 10000;
 
 // Serialize writes per-file so concurrent requests for the same site don't
 // interleave read-modify-write cycles and drop events.
@@ -32,6 +36,14 @@ function appendEvent(siteId, record) {
       }
     }
     events.push(record);
+
+    // Cap the log so it can't grow without bound; drop the oldest events,
+    // keeping the most recent `maxEvents`.
+    const maxEvents = getConfig().maxEventsPerSite || DEFAULT_MAX_EVENTS_PER_SITE;
+    if (maxEvents > 0 && events.length > maxEvents) {
+      events = events.slice(events.length - maxEvents);
+    }
+
     fs.writeFileSync(filePath, JSON.stringify(events, null, 2));
     return record;
   });
