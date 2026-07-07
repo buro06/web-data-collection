@@ -1,6 +1,6 @@
 {
   "port": 3000,
-  "trustProxy": false,
+  "trustProxy": true,
   "geoipDbPath": "data/geoip/GeoLite2-City.mmdb",
   "maxEventsPerSite": 10000,
   "defaultRateLimit": {
