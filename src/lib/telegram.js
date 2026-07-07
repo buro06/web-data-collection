@@ -115,6 +115,7 @@ function formatEventMessage(site, record) {
   if (deviceBits) deviceLines.push(`📱 ${escapeHtml(deviceBits)}`);
   if (d.screen) deviceLines.push(`🖥 ${d.screen.width}×${d.screen.height} @${d.screen.pixelRatio || 1}x`);
   if (d.timezone) deviceLines.push(`🕑 ${escapeHtml(d.timezone)}`);
+  if (record.fingerprint) deviceLines.push(`🆔 <code>${escapeHtml(record.fingerprint)}</code>`);
   if (deviceLines.length) {
     lines.push('');
     lines.push(`<blockquote>${deviceLines.join('\n')}</blockquote>`);
