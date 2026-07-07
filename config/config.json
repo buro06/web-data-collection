@@ -1,0 +1,21 @@
+{
+  "port": 3000,
+  "trustProxy": false,
+  "geoipDbPath": "data/geoip/GeoLite2-City.mmdb",
+  "defaultRateLimit": {
+    "windowSeconds": 60,
+    "maxEvents": 20
+  },
+  "botDetection": {
+    "minDwellMsForPageview": 300,
+    "blockedUserAgentPatterns": [
+      "bot", "crawl", "spider", "slurp", "curl", "wget",
+      "python-requests", "python-urllib", "java/", "go-http-client",
+      "headlesschrome", "phantomjs", "puppeteer", "selenium", "playwright",
+      "scrapy", "httpclient", "libwww-perl", "facebookexternalhit",
+      "ahrefsbot", "semrushbot", "mj12bot", "dotbot", "petalbot",
+      "bytespider", "gptbot", "ccbot", "claudebot", "applebot",
+      "postmanruntime", "insomnia"
+    ]
+  }
+}

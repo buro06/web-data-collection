@@ -1,0 +1,16 @@
+{
+  "sites": [
+    {
+      "id": "my-site",
+      "name": "My Site",
+      "secret": "replace-with-a-long-random-string",
+      "allowedDomains": ["example.com", "www.example.com"],
+      "telegramChatId": "REPLACE_WITH_YOUR_CHAT_ID",
+      "rateLimit": { "windowSeconds": 60, "maxEvents": 20 },
+      "events": {
+        "page_view": { "label": "Page View", "requiresGps": false },
+        "resume_download": { "label": "Resume Download", "requiresGps": true }
+      }
+    }
+  ]
+}

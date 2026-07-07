@@ -1,0 +1,11 @@
+.env
+node_modules/
+data/
+public/vendor/
+*.log
+
+# Real per-site config with secrets/chat IDs — copy sites.example.json to it
+config/sites.json
+
+# IDE
+.idea/

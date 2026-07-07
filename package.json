@@ -1,0 +1,21 @@
+{
+  "name": "web-data-collection",
+  "version": "1.0.0",
+  "description": "Self-hosted visitor tracking with Telegram notifications",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "postinstall": "node scripts/copy-vendor.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "private": true,
+  "dependencies": {
+    "@fingerprintjs/fingerprintjs": "^4.4.3",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "maxmind": "^4.3.20",
+    "ua-parser-js": "^1.0.39"
+  }
+}
