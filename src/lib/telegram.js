@@ -55,19 +55,33 @@ function escapeHtml(str) {
     .replace(/>/g, '&gt;');
 }
 
-// "2026-07-06T14:32:05.123Z" -> "6 Jul 2026, 14:32 UTC"
+const TIME_ZONE = 'America/Chicago'; // US Central (CST/CDT)
+
+// "2026-07-06T14:32:05.123Z" -> "6 Jul 2026 09:32 CDT"
+// Rendered in US Central time; the CST/CDT abbreviation is resolved from the
+// en-US locale (en-GB renders it as a GMT offset) and switches automatically
+// with daylight saving for the given date.
 function formatTimestamp(iso) {
   try {
-    return new Date(iso)
+    const date = new Date(iso);
+    const datePart = date
       .toLocaleString('en-GB', {
         day: 'numeric',
         month: 'short',
         year: 'numeric',
         hour: '2-digit',
         minute: '2-digit',
-        timeZone: 'UTC',
+        hour12: true,
+        timeZone: TIME_ZONE,
       })
-      .replace(',', '') + ' UTC';
+      .replace(',', '');
+    const zonePart = new Intl.DateTimeFormat('en-US', {
+      timeZone: TIME_ZONE,
+      timeZoneName: 'short',
+    })
+      .formatToParts(date)
+      .find((p) => p.type === 'timeZoneName');
+    return zonePart ? `${datePart} ${zonePart.value}` : datePart;
   } catch {
     return iso;
   }
@@ -87,7 +101,7 @@ function formatEventMessage(site, record) {
 
   // Location block.
   const geo = record.geo;
-  const place = geo ? [geo.city, geo.region, geo.country].filter(Boolean).join(', ') : '';
+  const place = geo ? [geo.city, geo.region, geo.country].filter(Boolean).join(', ') : 'No Geo data';
   const locBits = [];
   if (place) locBits.push(`📍 ${escapeHtml(place)}`);
   locBits.push(`🖧 IP <code>${escapeHtml(record.ip)}</code>`);
