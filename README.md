@@ -15,7 +15,9 @@ per-site Telegram notifications. No database — everything is JSON files.
    sends a formatted Telegram message to the chat configured for that site.
    When the event includes GPS coordinates, it also sends a native,
    interactive Telegram map pin of the general area (accuracy circle
-   included) right after the message.
+   included) right after the message. Message timestamps are rendered in US
+   Central time (CST/CDT, `America/Chicago`), adjusting for daylight saving
+   automatically.
 
 ## 1. Install
 
@@ -95,11 +97,23 @@ effect immediately without restarting the server.
   data-secret="some-long-random-string"
   data-auto-pageview="true"
   data-request-gps-on-pageview="false"
+  data-pageview-delay="350"
+  data-gps-timeout="6000"
 ></script>
 ```
 
 This automatically fires a `page_view` event on page load. The snippet
 exposes a small global, `window.WDC`, with two methods:
+
+Optional timing attributes (both shown with their defaults):
+
+- `data-pageview-delay` — milliseconds to wait after load before firing the
+  automatic `page_view` (default `350`). This also delays the GPS prompt a
+  beat when `data-request-gps-on-pageview="true"`, so it appears once the page
+  has settled rather than the instant it opens.
+- `data-gps-timeout` — the hard ceiling, in milliseconds, on how long the
+  snippet waits for the visitor to answer the GPS prompt (default `6000`). See
+  the GPS behavior notes below.
 
 ### `WDC.track(eventName, options?)`
 
@@ -121,9 +135,10 @@ first. Returns a promise that resolves once the beacon is sent.
 For links that navigate away from your site. Fires the event (usually with
 `{ requestGps: true }`), **waits** for the GPS prompt to be answered and the
 beacon to be sent, and *then* redirects to `url`. A safety timer
-(`maxWaitMs`, default 8s) guarantees the redirect always happens, so a stalled
-prompt or slow network never traps the visitor. The `keepalive` fetch also
-means the beacon survives the navigation.
+(`maxWaitMs`, default `data-gps-timeout` + 2s, i.e. 8s out of the box)
+guarantees the redirect always happens, so a stalled prompt or slow network
+never traps the visitor. The `keepalive` fetch also means the beacon survives
+the navigation.
 
 **Always guard the handler with `if (window.WDC)` before calling
 `event.preventDefault()`.** If the tracking server is down (or the
@@ -168,14 +183,28 @@ HTTP for local development. Once you deploy to a real domain, the
 tracking server *and* the site embedding the snippet both need HTTPS or
 GPS requests will silently fail.
 
-If the visitor denies the permission prompt or it's unavailable, the event
-still sends — just without GPS coordinates (and no map pin is sent).
+**GPS behavior — how the wait resolves.** Whenever an event requests GPS, the
+snippet sends **exactly one** beacon and never blocks indefinitely:
+
+- **Approves in time** → the beacon is sent with GPS coordinates (and the
+  server follows up with a map pin).
+- **Declines** → the beacon is sent immediately without GPS.
+- **Ignores the prompt** → a hard timeout (`data-gps-timeout`, default 6s)
+  fires and the beacon is sent without GPS. This backstops browsers that never
+  fire a callback while a permission prompt sits unanswered.
+- **Leaves the page before answering** → a `pagehide` handler flushes the
+  beacon (without GPS) so the `page_view` is never lost. (A plain tab-switch
+  does *not* flush, so a prompt the visitor may still answer isn't cut off.)
+
+In every case the non-GPS data (device, fingerprint, geo, page context) is
+sent; GPS is simply attached only when granted in time.
 
 ## 5. GeoIP (IP → location) setup
 
 IP geolocation uses a local MaxMind GeoLite2 database (free, no per-request
 API calls or rate limits). If it's missing, events are still stored/notified
-normally, just without a resolved `geo` field.
+normally, just without a resolved `geo` field — the Telegram message shows
+`📍 No Geo data` in that case.
 
 1. Create a free account at MaxMind and generate a license key:
    https://www.maxmind.com/en/geolite2/signup
@@ -184,6 +213,14 @@ normally, just without a resolved `geo` field.
    `config/config.json` → `geoipDbPath`).
 3. MaxMind updates this database periodically — re-download it every so
    often (their own tool `geoipupdate` can automate this if you want).
+
+> **Deploying:** the whole `data/` directory is gitignored (it holds the DB
+> and your event logs), so `git push` does **not** carry the database to your
+> server. You must provision `GeoLite2-City.mmdb` on the server separately —
+> e.g. `scp` it up, or download it there with `geoipupdate`. A common gotcha is
+> IPs resolving locally but every production notification showing
+> `No Geo data` because the server has no database file. (Don't commit the
+> `.mmdb` to a public repo — MaxMind's license forbids redistributing it.)
 
 ## 6. Bot / scraper filtering
 
@@ -196,7 +233,8 @@ Heuristic only, no external service:
   `navigator.webdriver` (default in Selenium/Puppeteer/Playwright).
 - Flags auto `page_view` events that fire suspiciously fast after page
   load (`botDetection.minDwellMsForPageview`, default 300ms) — the snippet
-  itself waits ~350ms before sending the automatic pageview beacon.
+  itself waits `data-pageview-delay` ms (default 350) before sending the
+  automatic pageview beacon, so keep that delay above this threshold.
 - Per-site, per-IP rate limiting (default 20 events/min, configurable).
 
 Flagged-but-not-blocked events are still stored/notified, with
@@ -211,10 +249,13 @@ npm run dev         # auto-restart on file changes
 ```
 
 Configurable via `config/config.json` (`port`) or `PORT` env var. Put this
-behind a reverse proxy (nginx/Caddy) for HTTPS, and set `"trustProxy": true`
-in `config/config.json` if you do so the real visitor IP (`X-Forwarded-For`)
-is used instead of the proxy's IP. Run it long-term with `pm2` or a
-`systemd` unit.
+behind a reverse proxy (nginx/Caddy) for HTTPS. `"trustProxy"` defaults to
+`true` in `config/config.json` so the real visitor IP is read from
+`X-Forwarded-For` (which Caddy's `reverse_proxy` sets automatically) instead
+of the proxy's own IP — required for correct IPs *and* GeoIP location. Only
+set it to `false` if the app is exposed directly to visitors with no proxy in
+front (otherwise a client could spoof its IP via a forged header). Run it
+long-term with `pm2` or a `systemd` unit.
 
 ## 8. Where the data lives
 
