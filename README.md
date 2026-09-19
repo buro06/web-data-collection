@@ -18,6 +18,12 @@ per-site Telegram notifications. No database — everything is JSON files.
    included) right after the message. Message timestamps are rendered in US
    Central time (CST/CDT, `America/Chicago`), adjusting for daylight saving
    automatically.
+4. Every alert says **who** the visitor is and **how many times they've been
+   here** — by browser fingerprint, and by name once you've matched that
+   fingerprint to a person ([section 5](#5-visitors-visit-counts-and-naming-an-identity)).
+5. The alert's engagement timer keeps updating in place while they're still
+   reading, so you can see how long they actually stayed
+   ([section 6](#6-engagement-time-how-long-they-actually-stayed)).
 
 ## 1. Install
 
@@ -99,13 +105,17 @@ effect immediately without restarting the server.
   data-request-gps-on-pageview="false"
   data-pageview-delay="350"
   data-gps-timeout="6000"
+  data-min-engagement="1000"
+  data-idle-timeout="30000"
+  data-engagement-ping="60000"
 ></script>
 ```
 
 This automatically fires a `page_view` event on page load. The snippet
-exposes a small global, `window.WDC`, with two methods:
+exposes a small global, `window.WDC`, with two methods (plus
+`WDC.engagementMs()` and `WDC.viewId`, handy when debugging):
 
-Optional timing attributes (both shown with their defaults):
+Optional timing attributes (all shown with their defaults):
 
 - `data-pageview-delay` — milliseconds to wait after load before firing the
   automatic `page_view` (default `350`). This also delays the GPS prompt a
@@ -114,6 +124,15 @@ Optional timing attributes (both shown with their defaults):
 - `data-gps-timeout` — the hard ceiling, in milliseconds, on how long the
   snippet waits for the visitor to answer the GPS prompt (default `6000`). See
   the GPS behavior notes below.
+- `data-min-engagement` — active engagement the visitor must accumulate
+  before the automatic `page_view` is sent at all (default `1000`). Set it to
+  `0` to send every pageview the instant `data-pageview-delay` elapses, as
+  older versions did. See
+  [section 6](#6-engagement-time-how-long-they-actually-stayed).
+- `data-idle-timeout` — silence for this long and the visitor stops counting
+  as engaged (default `30000`).
+- `data-engagement-ping` — how often the running engagement total is reported
+  while the visitor is still on the page (default `60000`).
 
 ### `WDC.track(eventName, options?)`
 
@@ -199,7 +218,123 @@ snippet sends **exactly one** beacon and never blocks indefinitely:
 In every case the non-GPS data (device, fingerprint, geo, page context) is
 sent; GPS is simply attached only when granted in time.
 
-## 5. GeoIP (IP → location) setup
+## 5. Visitors, visit counts, and naming an identity
+
+Every notification opens with a line answering *who is this, and have they
+been here before?*
+
+```
+🔔 My Portfolio
+Page View · 19 Sep 2026 09:32 am CDT
+👤 Michael · 11th visit · since 1 Jul 2026 · ⏱ 2m 14s
+```
+
+The browser fingerprint (the `🆔` line further down the alert) is a stable,
+anonymous handle for one browser. It's enough to recognise a returning
+visitor, but not to know *who* they are — so you tell the server, once.
+
+**Matching a fingerprint to a person.** Say Michael visits ten times
+anonymously, and on the eleventh he shares his location, downloads your
+resume, or emails you a minute later. That's the moment you can attach a name
+to the fingerprint with good faith — and you only ever have to do it once.
+Reply to that alert in Telegram with:
+
+```
+/name Michael
+```
+
+From then on, every visit from that browser is labelled `👤 Michael`,
+**including the ten that came before** — the name is resolved when the alert
+is rendered, not baked into stored events. He never has to share his location
+again for you to know he was there.
+
+Names are keyed to the fingerprint itself, which belongs to the browser rather
+than to any one site, so naming someone on one of your sites recognises them
+on all of them. They live in `data/identities.json`.
+
+### Telegram commands
+
+The bot listens for commands in any chat that is already configured as some
+site's `telegramChatId`. Anything from any other chat is ignored without a
+reply, so the bot can't be used as a lookup oracle by whoever finds it. Only
+the sites that notify *that* chat are searched.
+
+| Command | What it does |
+| --- | --- |
+| `/visits <fingerprint>` | How many times that identity has visited, with first/last seen, total engaged time, event breakdown, last known location and top pages |
+| `/name <fingerprint> <name>` | Match the fingerprint to a person |
+| `/forget <fingerprint>` | Drop the name; the fingerprint goes back to anonymous |
+| `/top [count]` | Most frequent visitors per site (default 10) |
+| `/identities` | Every identity you've named |
+| `/help` | The list above |
+
+Two shortcuts worth knowing:
+
+- **A prefix is enough.** Fingerprints are 32 hex characters; `/visits aaaabb`
+  works as long as it's unambiguous (if it isn't, the bot lists the candidates).
+- **Reply to an alert instead of typing a fingerprint.** Each notification's
+  message id is recorded against its event, so replying to a notification with
+  `/name Michael`, a bare `/visits`, or `/forget` applies to that visitor.
+
+Commands are on by default. Turn them off with
+`"telegram": { "commands": { "enabled": false } }` in `config/config.json` —
+it's re-read between polls, so the switch takes effect without a restart.
+
+> Telegram allows only one consumer of a bot's updates at a time. If you run a
+> second instance (a dev server alongside production) or have a webhook set on
+> the same token, the second one logs
+> `another process is polling this bot token; commands are inactive here` and
+> keeps sending notifications normally — only its command listening is idle.
+
+### What counts as a "visit"
+
+A visit is a *session*, not an event: a run of events from one fingerprint
+with no gap longer than `sessionGapMinutes` (`config/config.json`, default
+30). Clicking through four pages in one sitting is one visit; coming back
+tomorrow is the second. The number is stamped onto each event as it's stored,
+so it stays accurate even after old events age out of the capped log.
+
+Visitors whose fingerprint failed to resolve (blocked scripts, hardened
+privacy settings) show as `👤 No fingerprint` and aren't counted toward
+anyone's history.
+
+## 6. Engagement time (how long they actually stayed)
+
+Each alert carries an `⏱` timer showing how long the visitor has been
+**actively engaged** — not how long the tab was open. Time accrues only while
+the page is visible *and* the visitor has interacted (or just arrived) within
+`data-idle-timeout`. A tab left open in the background all afternoon adds
+nothing.
+
+The pageview alert fires seconds after someone arrives, so the total isn't
+knowable yet. Instead the snippet reports the running figure as the visit goes
+on — once a minute (`data-engagement-ping`), whenever the tab is hidden, and
+once more when they leave — and the server **rewrites the original alert in
+place** each time. One notification per visit, with a timer that keeps
+climbing while they read.
+
+### Dropping sub-second visits
+
+The same clock filters out noise before it's ever sent: the automatic
+`page_view` is withheld until the visitor has accumulated
+`data-min-engagement` (default 1000ms) of active engagement. An instant
+bounce, a double-fired beacon, or a page opened in a background tab and never
+looked at never becomes an event, and never pings your phone.
+
+Two more layers back that up:
+
+- A re-sent `page_view` — same page view, same URL, within 30 seconds — is
+  recognised as a duplicate and dropped without a second alert.
+- Server-side, a `page_view` arriving with less engagement than
+  `botDetection.minEngagementMsForPageview` (default 1000) is flagged
+  `insufficient_engagement`. Since the snippet won't send one, anything that
+  does is either an outdated snippet or a forged payload. It's stored and
+  notified with the flag rather than dropped, so you can see it.
+
+Explicitly tracked events (`WDC.track(...)` on a button) are never withheld —
+a click is deliberate by definition.
+
+## 7. GeoIP (IP → location) setup
 
 IP geolocation uses a local MaxMind GeoLite2 database (free, no per-request
 API calls or rate limits). If it's missing, events are still stored/notified
@@ -222,7 +357,7 @@ normally, just without a resolved `geo` field — the Telegram message shows
 > `No Geo data` because the server has no database file. (Don't commit the
 > `.mmdb` to a public repo — MaxMind's license forbids redistributing it.)
 
-## 6. Bot / scraper filtering
+## 8. Bot / scraper filtering
 
 Heuristic only, no external service:
 
@@ -235,13 +370,21 @@ Heuristic only, no external service:
   load (`botDetection.minDwellMsForPageview`, default 300ms) — the snippet
   itself waits `data-pageview-delay` ms (default 350) before sending the
   automatic pageview beacon, so keep that delay above this threshold.
-- Per-site, per-IP rate limiting (default 20 events/min, configurable).
+- Flags auto `page_view` events reporting less active engagement than
+  `botDetection.minEngagementMsForPageview` (default 1000ms) — the snippet
+  withholds the beacon until the visitor clears `data-min-engagement`, so keep
+  the two in step. See
+  [section 6](#6-engagement-time-how-long-they-actually-stayed).
+- Drops re-sent pageview beacons (same page view, same URL, within 30s)
+  before they're stored or notified.
+- Per-site, per-IP rate limiting (default 20 events/min, configurable, plus a
+  separate `engagementRateLimit` budget for engagement pings).
 
 Flagged-but-not-blocked events are still stored/notified, with
 `"suspicious": true` and a `"botFlags"` list, so you can review them rather
 than silently losing data.
 
-## 7. Running it
+## 9. Running it
 
 ```bash
 npm start          # production
@@ -257,7 +400,7 @@ set it to `false` if the app is exposed directly to visitors with no proxy in
 front (otherwise a client could spoof its IP via a forged header). Run it
 long-term with `pm2` or a `systemd` unit.
 
-## 8. Where the data lives
+## 10. Where the data lives
 
 Each site's events append to `data/events/<siteId>.json` as a JSON array.
 Each file is capped at `maxEventsPerSite` events (`config/config.json`,
@@ -265,8 +408,45 @@ default 10000): once full, the oldest events are dropped as new ones arrive,
 so a file can't grow without bound. Set it to `0` to disable the cap (and
 trim/archive the files yourself).
 
+Alongside the enriched request data, each event carries:
+
+```json
+{
+  "fingerprint": "e0fcc9e99a4f92c1c57bd0b0d3b871da",
+  "viewId": "7b1c…",
+  "visit": {
+    "number": 11,
+    "eventCount": 34,
+    "firstSeen": "2026-07-01T14:02:11.004Z",
+    "previousSeen": "2026-09-18T22:40:09.881Z",
+    "returning": true
+  },
+  "engagementMs": 134000,
+  "engagementFinal": true,
+  "telegramMessageId": 4821
+}
+```
+
+- `viewId` ties the several events of one page view together, and is what a
+  later engagement ping looks up.
+- `visit` is the sessionized visit count as of that event.
+- `telegramMessageId` is the notification this event produced — it's how the
+  engagement timer edits the right alert, and how replying to an alert knows
+  which visitor you mean.
+
+Names you assign to fingerprints live in `data/identities.json`, keyed by
+fingerprint and shared across every site. It's the one file here holding
+data you entered rather than collected, so it's the one worth backing up.
+
+Writes go through a per-file queue and land via a temp file + rename, so
+concurrent beacons can't clobber each other and a crash mid-write can't leave
+a truncated JSON file behind.
+
 ## Endpoints
 
 - `POST /api/track` — the tracking endpoint the snippet calls.
+- `POST /api/engagement` — engagement updates for a page view already logged.
+  Sent as `text/plain` so the unload beacon skips the CORS preflight; same
+  site secret and `allowedDomains` checks as `/api/track`.
 - `GET /track.js`, `GET /vendor/fingerprint.min.js` — static client assets.
 - `GET /health` — liveness check.

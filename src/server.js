@@ -5,6 +5,7 @@ const path = require('path');
 
 const { getConfig, ROOT } = require('./lib/config');
 const trackRouter = require('./routes/track');
+const telegramCommands = require('./lib/telegramCommands');
 
 function createServer() {
   const config = getConfig();
@@ -95,9 +96,13 @@ function start() {
   const config = getConfig();
   const app = createServer();
   const port = process.env.PORT || config.port || 3000;
-  return app.listen(port, () => {
+  const server = app.listen(port, () => {
     console.log(`web-data-collection listening on port ${port}`);
   });
+  // Started here rather than in createServer() so importing the app (tests,
+  // tooling) doesn't open a long-poll against the Telegram API.
+  telegramCommands.start();
+  return server;
 }
 
 module.exports = { createServer, start };

@@ -3,12 +3,23 @@
   "trustProxy": true,
   "geoipDbPath": "data/geoip/GeoLite2-City.mmdb",
   "maxEventsPerSite": 10000,
+  "sessionGapMinutes": 30,
   "defaultRateLimit": {
     "windowSeconds": 60,
     "maxEvents": 20
   },
+  "engagementRateLimit": {
+    "windowSeconds": 60,
+    "maxEvents": 30
+  },
+  "telegram": {
+    "commands": {
+      "enabled": true
+    }
+  },
   "botDetection": {
     "minDwellMsForPageview": 300,
+    "minEngagementMsForPageview": 1000,
     "blockedUserAgentPatterns": [
       "bot", "crawl", "spider", "slurp", "curl", "wget",
       "python-requests", "python-urllib", "java/", "go-http-client",

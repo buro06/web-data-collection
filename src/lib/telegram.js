@@ -29,6 +29,19 @@ async function sendMessage(chatId, text) {
   });
 }
 
+// Rewrites a notification already in the chat. Used to keep the engagement
+// timer on an alert current as the visit goes on, instead of posting a second
+// message every time the visitor's time-on-page changes.
+async function editMessageText(chatId, messageId, text) {
+  return callApi('editMessageText', {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+    parse_mode: 'HTML',
+    disable_web_page_preview: true,
+  });
+}
+
 // Sends a native, interactive Telegram map pin. `accuracy` (metres) renders a
 // shaded "general area" circle around the point rather than a pinpoint.
 async function sendLocation(chatId, lat, lon, accuracy) {
@@ -38,6 +51,24 @@ async function sendLocation(chatId, lat, lon, accuracy) {
     payload.horizontal_accuracy = Math.min(Math.max(accuracy, 0), 1500);
   }
   return callApi('sendLocation', payload);
+}
+
+// Long-poll for incoming commands. `timeoutSeconds` is served by Telegram: the
+// request hangs open until an update arrives or the timeout expires, so this is
+// one idle connection rather than a busy poll.
+async function getUpdates(offset, timeoutSeconds) {
+  const body = await callApi('getUpdates', {
+    offset,
+    timeout: timeoutSeconds,
+    allowed_updates: ['message'],
+  });
+  return body.result || [];
+}
+
+// Populates the "/" menu in the Telegram client so the commands are
+// discoverable without remembering them.
+async function setMyCommands(commands) {
+  return callApi('setMyCommands', { commands });
 }
 
 async function verifyToken() {
@@ -87,17 +118,85 @@ function formatTimestamp(iso) {
   }
 }
 
+// Date only, for "returning since ..." context where the clock time is noise.
+function formatDate(iso) {
+  try {
+    return new Date(iso).toLocaleString('en-GB', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+      timeZone: TIME_ZONE,
+    });
+  } catch {
+    return iso;
+  }
+}
+
+// 1 -> "1st", 2 -> "2nd", 11 -> "11th", 21 -> "21st"
+function ordinal(n) {
+  const rem100 = n % 100;
+  if (rem100 >= 11 && rem100 <= 13) return `${n}th`;
+  switch (n % 10) {
+    case 1:
+      return `${n}st`;
+    case 2:
+      return `${n}nd`;
+    case 3:
+      return `${n}rd`;
+    default:
+      return `${n}th`;
+  }
+}
+
+// Returns null below a second so a notification never shows a meaningless "0s".
+function formatDuration(ms) {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 1000) return null;
+  const totalSeconds = Math.round(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours) return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
+  if (minutes) return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  return `${seconds}s`;
+}
+
 // Truncate long URLs so a message stays scannable.
 function shorten(str, max = 60) {
   return str.length > max ? `${str.slice(0, max - 1)}…` : str;
 }
 
-function formatEventMessage(site, record) {
+// The "who is this, and have they been here before?" line. It exists so the
+// answer is in the alert itself — no scrolling back through months of
+// notifications to work out whether this visitor is new.
+function formatVisitorLine(record, identity) {
+  const bits = [];
+
+  if (identity?.name) bits.push(`👤 <b>${escapeHtml(identity.name)}</b>`);
+  else if (record.fingerprint) bits.push('👤 <i>Unidentified</i>');
+  else bits.push('👤 <i>No fingerprint</i>');
+
+  const visit = record.visit;
+  if (visit) {
+    bits.push(visit.number === 1 ? '<b>first visit</b>' : `<b>${ordinal(visit.number)} visit</b>`);
+    if (visit.returning && visit.firstSeen) bits.push(`since ${escapeHtml(formatDate(visit.firstSeen))}`);
+  }
+
+  const engaged = formatDuration(record.engagementMs);
+  if (engaged) bits.push(`⏱ ${engaged}`);
+
+  return bits.join(' · ');
+}
+
+// `options.identity` is the stored identity entry for record.fingerprint, if
+// any. It's passed in rather than looked up here so this stays a pure render —
+// the engagement endpoint re-renders the very same message to update it.
+function formatEventMessage(site, record, options = {}) {
   const lines = [];
 
-  // Header: which site, which event, when.
+  // Header: which site, which event, when, and who.
   lines.push(`🔔 <b>${escapeHtml(site.name)}</b>`);
   lines.push(`<b>${escapeHtml(record.eventLabel)}</b> · <i>${escapeHtml(formatTimestamp(record.timestamp))}</i>`);
+  lines.push(formatVisitorLine(record, options.identity));
 
   // Location block.
   const geo = record.geo;
@@ -152,4 +251,17 @@ function formatEventMessage(site, record) {
   return lines.join('\n');
 }
 
-module.exports = { sendMessage, sendLocation, verifyToken, formatEventMessage };
+module.exports = {
+  sendMessage,
+  editMessageText,
+  sendLocation,
+  getUpdates,
+  setMyCommands,
+  verifyToken,
+  formatEventMessage,
+  escapeHtml,
+  formatTimestamp,
+  formatDate,
+  formatDuration,
+  ordinal,
+};

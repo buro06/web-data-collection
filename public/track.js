@@ -10,6 +10,7 @@
   var AUTO_PAGEVIEW_GPS = scriptTag.getAttribute('data-request-gps-on-pageview') === 'true';
   var SERVER_ORIGIN = new URL(scriptTag.src).origin;
   var TRACK_URL = SERVER_ORIGIN + '/api/track';
+  var ENGAGEMENT_URL = SERVER_ORIGIN + '/api/engagement';
   var VENDOR_FP_URL = SERVER_ORIGIN + '/vendor/fingerprint.min.js';
 
   // How long to wait after load before firing the pageview (and, if enabled,
@@ -19,14 +20,43 @@
   // send with GPS; if they decline, ignore the prompt, or the browser stalls,
   // we give up at this point and send everything else without GPS.
   var GPS_TIMEOUT = toInt(scriptTag.getAttribute('data-gps-timeout'), 6000);
+  // Active engagement the visitor must accumulate before the automatic
+  // pageview is sent at all. Instant bounces, background prerenders and
+  // double-fired beacons never reach it, so they never become events.
+  var MIN_ENGAGEMENT = toInt(scriptTag.getAttribute('data-min-engagement'), 1000);
+  // Silence for this long and the visitor is treated as no longer engaged.
+  var IDLE_TIMEOUT = toInt(scriptTag.getAttribute('data-idle-timeout'), 30000);
+  // How often the running engagement total is reported while they're still here.
+  var ENGAGEMENT_PING = toInt(scriptTag.getAttribute('data-engagement-ping'), 60000);
 
   var pageLoadTime = performance.now();
   var fingerprintPromise = null;
   var fpValue = null; // latest resolved fingerprint, or null if not ready/failed
+  // Identifies this page view across every beacon it produces, so the server
+  // can attach later engagement reports to the event it already logged.
+  var VIEW_ID = randomId();
 
   function toInt(val, fallback) {
     var n = parseInt(val, 10);
     return isNaN(n) ? fallback : n;
+  }
+
+  function randomId() {
+    try {
+      if (window.crypto && crypto.randomUUID) return crypto.randomUUID().replace(/-/g, '');
+      if (window.crypto && crypto.getRandomValues) {
+        var bytes = new Uint8Array(16);
+        crypto.getRandomValues(bytes);
+        return Array.prototype.map
+          .call(bytes, function (b) {
+            return ('0' + b.toString(16)).slice(-2);
+          })
+          .join('');
+      }
+    } catch (e) {
+      /* fall through */
+    }
+    return String(Date.now()) + Math.random().toString(16).slice(2, 10);
   }
 
   function loadScript(src) {
@@ -59,6 +89,142 @@
       });
     return fingerprintPromise;
   }
+
+  // ---------------------------------------------------------------------
+  // Active engagement
+  //
+  // Wall-clock time on a page says little — a tab can sit open for hours in
+  // the background. "Engaged" means the page is visible AND the visitor has
+  // done something (or only just arrived) within IDLE_TIMEOUT, so the number
+  // reported is closer to attention than to elapsed time.
+  //
+  // Time is accounted at state transitions rather than on a ticking interval,
+  // so an idle page costs nothing.
+  // ---------------------------------------------------------------------
+  var engagedMs = 0;
+  var activeSince = null; // start of the stretch currently being counted
+  var lastInteraction = Date.now();
+  var idleTimer = null;
+
+  function isEngaged() {
+    return document.visibilityState !== 'hidden' && Date.now() - lastInteraction < IDLE_TIMEOUT;
+  }
+
+  function engagementMs() {
+    if (activeSince === null) return Math.round(engagedMs);
+    // An unnoticed idle-out ends the stretch when the visitor went quiet, not now.
+    var end = Math.min(Date.now(), lastInteraction + IDLE_TIMEOUT);
+    return Math.round(engagedMs + Math.max(0, end - activeSince));
+  }
+
+  function refreshEngagement(interacted) {
+    var now = Date.now();
+    if (interacted) lastInteraction = now;
+
+    if (isEngaged()) {
+      if (activeSince === null) activeSince = now;
+      clearTimeout(idleTimer);
+      // Wake up once when the idle window expires, to close the stretch.
+      idleTimer = setTimeout(function () {
+        refreshEngagement(false);
+      }, Math.max(lastInteraction + IDLE_TIMEOUT - now, 0) + 50);
+    } else if (activeSince !== null) {
+      engagedMs = engagementMs();
+      activeSince = null;
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  }
+
+  ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart', 'click', 'wheel'].forEach(function (type) {
+    window.addEventListener(
+      type,
+      function () {
+        refreshEngagement(true);
+      },
+      { passive: true, capture: true }
+    );
+  });
+
+  document.addEventListener('visibilitychange', function () {
+    // Coming back to the tab counts as engagement; leaving closes the stretch.
+    refreshEngagement(document.visibilityState !== 'hidden');
+    if (document.visibilityState === 'hidden') reportEngagement({ force: true });
+  });
+
+  refreshEngagement(false);
+
+  // Runs `cb` once the visitor has been engaged for `ms`, and never if they
+  // leave first. Polls only while waiting, then stops — for a visible page
+  // that is about a second. A tab opened in the background accrues nothing, so
+  // its pageview waits (throttled by the browser) until the visitor actually
+  // looks at it, and is abandoned if they never do.
+  function whenEngagedFor(ms, cb) {
+    if (engagementMs() >= ms) return cb();
+    var giveUpAt = Date.now() + 30 * 60 * 1000;
+    var timer = setInterval(function () {
+      if (engagementMs() >= ms) {
+        clearInterval(timer);
+        cb();
+      } else if (Date.now() > giveUpAt) {
+        clearInterval(timer);
+      }
+    }, 200);
+  }
+
+  var viewReported = false; // an event exists server-side for VIEW_ID
+  var lastReportedMs = 0;
+  var finalReportSent = false;
+  var REPORT_STEP_MS = 5000;
+
+  // Reports the running engagement total. The server rewrites the original
+  // Telegram alert in place, so a long visit updates its own notification
+  // instead of producing a stream of new ones.
+  function reportEngagement(options) {
+    options = options || {};
+    if (!viewReported || finalReportSent) return;
+
+    var ms = engagementMs();
+    var delta = ms - lastReportedMs;
+    if (!options.final && delta < (options.force ? 1000 : REPORT_STEP_MS)) return;
+
+    lastReportedMs = ms;
+    if (options.final) finalReportSent = true;
+
+    var payload = JSON.stringify({
+      siteId: SITE_ID,
+      secret: SECRET,
+      viewId: VIEW_ID,
+      engagementMs: ms,
+      final: Boolean(options.final),
+    });
+
+    // text/plain keeps this a CORS "simple request": no preflight, which a
+    // page being torn down may not stay alive long enough to complete.
+    try {
+      if (navigator.sendBeacon) {
+        var blob = new Blob([payload], { type: 'text/plain;charset=UTF-8' });
+        if (navigator.sendBeacon(ENGAGEMENT_URL, blob)) return;
+      }
+    } catch (e) {
+      /* fall through to fetch */
+    }
+    fetch(ENGAGEMENT_URL, {
+      method: 'POST',
+      mode: 'cors',
+      headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+      body: payload,
+      keepalive: true,
+    }).catch(function () {});
+  }
+
+  setInterval(function () {
+    reportEngagement({});
+  }, ENGAGEMENT_PING);
+
+  window.addEventListener('pagehide', function () {
+    reportEngagement({ final: true });
+  });
 
   function getTimezone() {
     try {
@@ -158,17 +324,21 @@
 
       function dispatch(gps) {
         cleanup();
+        // Later engagement reports have something to attach to from here on.
+        viewReported = true;
         resolve(
           send({
             siteId: SITE_ID,
             secret: SECRET,
             event: eventName,
+            viewId: VIEW_ID,
             page: {
               url: window.location.href,
               referrer: document.referrer || null,
               title: document.title || null,
             },
             device: collectDevice(performance.now() - pageLoadTime),
+            engagementMs: engagementMs(),
             fingerprint: fpValue,
             gps: gps || null,
           })
@@ -225,7 +395,7 @@
     });
   }
 
-  window.WDC = { track: track, trackAndGo: trackAndGo };
+  window.WDC = { track: track, trackAndGo: trackAndGo, engagementMs: engagementMs, viewId: VIEW_ID };
 
   if (AUTO_PAGEVIEW) {
     var firePageview = function () {
@@ -233,7 +403,11 @@
       // (a lightweight speed bump against naive direct-POST spam) and so the
       // GPS prompt appears a beat after the page settles rather than instantly.
       setTimeout(function () {
-        track('page_view', { requestGps: AUTO_PAGEVIEW_GPS, gpsTimeout: GPS_TIMEOUT });
+        // ...then hold it until the visit is real. A visitor who bounces before
+        // MIN_ENGAGEMENT never produces an event at all.
+        whenEngagedFor(MIN_ENGAGEMENT, function () {
+          track('page_view', { requestGps: AUTO_PAGEVIEW_GPS, gpsTimeout: GPS_TIMEOUT });
+        });
       }, PAGEVIEW_DELAY);
     };
     if (document.readyState === 'complete') firePageview();
