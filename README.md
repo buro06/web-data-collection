@@ -266,6 +266,7 @@ the sites that notify *that* chat are searched.
 | `/forget <fingerprint>` | Drop the name; the fingerprint goes back to anonymous |
 | `/top [count]` | Most frequent visitors per site (default 10) |
 | `/identities` | Every identity you've named |
+| `/usage` | Disk space this install uses, and what's left on the filesystem |
 | `/help` | The list above |
 
 Two shortcuts worth knowing:
@@ -441,6 +442,37 @@ data you entered rather than collected, so it's the one worth backing up.
 Writes go through a per-file queue and land via a temp file + rename, so
 concurrent beacons can't clobber each other and a crash mid-write can't leave
 a truncated JSON file behind.
+
+### Checking disk usage
+
+`/usage` in Telegram reports what the install is costing and how much room is
+left, without SSH-ing into the box:
+
+```
+💾 Disk usage
+
+web-data-collection · 68.7 MB
+Event logs      104.0 KB
+GeoIP database   62.7 MB
+Dependencies      5.2 MB
+Other           724.0 KB
+
+Event logs
+my-site  87.4 KB  77 / 10000 events
+test1    12.0 KB   8 / 10000 events
+
+Filesystem
+Used       758.4 GB of 926.4 GB (82%)
+Available  167.9 GB
+```
+
+Sizes are what the files actually occupy on disk (the same figure `du`
+reports), and the filesystem line is the one holding the project. Event logs
+are broken out because they're the only part that grows on its own — each
+site's row shows how close it is to `maxEventsPerSite`. A log left behind by a
+site you've since removed from `sites.json` shows up as `(unlisted logs)`, so
+the numbers always reconcile. Below 1 GB or 10% free, the report adds a
+low-disk warning.
 
 ## Endpoints
 

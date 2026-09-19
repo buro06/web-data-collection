@@ -18,9 +18,12 @@ function readEvents(siteId) {
 }
 
 // Cap the log so it can't grow without bound; drop the oldest events, keeping
-// the most recent `maxEvents`.
+// the most recent `maxEvents`. An explicit 0 means uncapped, so the config
+// value is only defaulted when it's absent — `||` would have turned 0 back
+// into the default.
 function capped(events) {
-  const maxEvents = getConfig().maxEventsPerSite || DEFAULT_MAX_EVENTS_PER_SITE;
+  const configured = getConfig().maxEventsPerSite;
+  const maxEvents = typeof configured === 'number' ? configured : DEFAULT_MAX_EVENTS_PER_SITE;
   if (maxEvents > 0 && events.length > maxEvents) {
     return events.slice(events.length - maxEvents);
   }

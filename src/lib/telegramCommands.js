@@ -1,7 +1,10 @@
+const path = require('path');
+
 const { getConfig, getSites } = require('./config');
 const store = require('./store');
 const visits = require('./visits');
 const identity = require('./identity');
+const diskUsage = require('./diskUsage');
 const telegram = require('./telegram');
 
 // Answers "how many times has this identity visited my website?" on demand, in
@@ -23,6 +26,7 @@ const COMMAND_MENU = [
   { command: 'forget', description: 'Remove the name from a fingerprint' },
   { command: 'top', description: 'Most frequent visitors: /top [count]' },
   { command: 'identities', description: 'List every named identity' },
+  { command: 'usage', description: 'Disk space this install uses, and what is left' },
   { command: 'help', description: 'Show these commands' },
 ];
 
@@ -34,6 +38,7 @@ const HELP = [
   '<code>/forget &lt;fingerprint&gt;</code> — drop the name again',
   '<code>/top [count]</code> — most frequent visitors per site',
   '<code>/identities</code> — every identity you have named',
+  '<code>/usage</code> — disk space used, and what is left on the filesystem',
   '',
   'A few characters of a fingerprint is enough, as long as it is unambiguous.',
   '',
@@ -146,6 +151,9 @@ async function handleUpdate(update) {
     case 'identities':
     case 'names':
       return cmdIdentities(sites, chatId);
+    case 'usage':
+    case 'disk':
+      return cmdUsage(sites, chatId);
     case 'help':
     case 'start':
       return telegram.sendMessage(chatId, HELP);
@@ -420,6 +428,91 @@ async function cmdIdentities(sites, chatId) {
     );
   }
   if (entries.length > MAX_LIST_ROWS) lines.push(`<i>…and ${entries.length - MAX_LIST_ROWS} more.</i>`);
+
+  return telegram.sendMessage(chatId, lines.join('\n'));
+}
+
+// Telegram renders <pre> in a monospace font, which is the only way these
+// columns line up on a phone. Labels go left, figures right, so digits stack
+// in the same place — unless the values are prose rather than numbers, which
+// reads better flush left.
+function table(rows, alignRight = true) {
+  const widths = [];
+  for (const row of rows) {
+    row.forEach((cell, i) => {
+      widths[i] = Math.max(widths[i] || 0, String(cell).length);
+    });
+  }
+  return rows
+    .map((row) =>
+      row
+        .map((cell, i) => {
+          const text = String(cell);
+          return i > 0 && alignRight ? text.padStart(widths[i]) : text.padEnd(widths[i]);
+        })
+        .join('  ')
+        .trimEnd()
+    )
+    .join('\n');
+}
+
+async function cmdUsage(sites, chatId) {
+  const fmt = diskUsage.formatBytes;
+  const usage = await diskUsage.projectUsage();
+  const disk = await diskUsage.filesystemStats();
+
+  const lines = ['💾 <b>Disk usage</b>', ''];
+
+  lines.push(`<b>${esc(path.basename(usage.root))}</b> · ${fmt(usage.total)}`);
+  const breakdown = usage.breakdown.map((entry) => [entry.label, fmt(usage.parts[entry.key])]);
+  breakdown.push(['Other', fmt(usage.other)]);
+  lines.push(`<pre>${esc(table(breakdown))}</pre>`);
+
+  // The event logs are the part that grows on its own, so show how close each
+  // one is to the cap that stops it.
+  const configured = getConfig().maxEventsPerSite;
+  const cap = typeof configured === 'number' ? configured : 10000;
+  const siteRows = [];
+  let accounted = 0;
+  for (const site of sites) {
+    const bytes = await diskUsage.fileSize(store.filePathFor(site.id));
+    accounted += bytes;
+    const count = store.readEvents(site.id).length;
+    siteRows.push([site.name, fmt(bytes), `${count} / ${cap > 0 ? cap : '∞'} events`]);
+  }
+  // Logs left behind by sites no longer in sites.json (or belonging to another
+  // chat) still take up room — say so rather than letting the totals disagree.
+  const unlisted = usage.parts.events - accounted;
+  if (unlisted > 1024) siteRows.push(['(unlisted logs)', fmt(unlisted), '']);
+  if (siteRows.length) {
+    lines.push('');
+    lines.push('<b>Event logs</b>');
+    lines.push(`<pre>${esc(table(siteRows))}</pre>`);
+  }
+
+  lines.push('');
+  if (disk) {
+    const percent = disk.total > 0 ? Math.round((disk.used / disk.total) * 100) : 0;
+    lines.push('<b>Filesystem</b>');
+    lines.push(
+      `<pre>${esc(
+        table(
+          [
+            ['Used', `${fmt(disk.used)} of ${fmt(disk.total)} (${percent}%)`],
+            ['Available', fmt(disk.available)],
+          ],
+          false
+        )
+      )}</pre>`
+    );
+    // Worth shouting about: a full disk stops events being written at all.
+    if (disk.available < 1024 * 1024 * 1024 || disk.available / disk.total < 0.1) {
+      lines.push('');
+      lines.push(`⚠️ <b>Low disk space</b> — only ${fmt(disk.available)} left.`);
+    }
+  } else {
+    lines.push('<i>Filesystem stats unavailable on this platform.</i>');
+  }
 
   return telegram.sendMessage(chatId, lines.join('\n'));
 }
