@@ -249,7 +249,8 @@ async function cmdVisits(sites, chatId, arg, message) {
   let seenAnywhere = false;
 
   for (const site of sites) {
-    const stats = visits.statsFor(store.readEvents(site.id), fingerprint);
+    const events = store.readEvents(site.id);
+    const stats = visits.statsFor(events, fingerprint);
     if (!stats) continue;
     seenAnywhere = true;
 
@@ -270,7 +271,15 @@ async function cmdVisits(sites, chatId, arg, message) {
       ? [stats.lastGeo.city, stats.lastGeo.region, stats.lastGeo.country].filter(Boolean).join(', ')
       : null;
     if (place) detail.push(`📍 ${esc(place)}`);
-    if (stats.lastIp) detail.push(`🖧 <code>${esc(stats.lastIp)}</code>`);
+    if (stats.lastIp) {
+      const ipStats = visits.visitsFor(events, 'ip', stats.lastIp);
+      detail.push(
+        `🖧 <code>${esc(stats.lastIp)}</code>` +
+          (ipStats
+            ? ` · ${ipStats.visitCount} ${ipStats.visitCount === 1 ? 'visit' : 'visits'} from this IP`
+            : '')
+      );
+    }
     if (stats.lastGps) {
       const { lat, lon } = stats.lastGps;
       detail.push(

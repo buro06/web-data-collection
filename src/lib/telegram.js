@@ -203,7 +203,13 @@ function formatEventMessage(site, record, options = {}) {
   const place = geo ? [geo.city, geo.region, geo.country].filter(Boolean).join(', ') : 'No Geo data';
   const locBits = [];
   if (place) locBits.push(`📍 ${escapeHtml(place)}`);
-  locBits.push(`🖧 IP <code>${escapeHtml(record.ip)}</code>`);
+  // Counted but never named — an IP is shared by everyone behind it, so it
+  // says "how often has this connection been here", not "who".
+  const ipVisit = record.ipVisit;
+  locBits.push(
+    `🖧 IP <code>${escapeHtml(record.ip)}</code>` +
+      (ipVisit ? ` · ${ordinal(ipVisit.number)} visit from this IP` : '')
+  );
   if (record.gps) {
     const { lat, lon, accuracy } = record.gps;
     const coords = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;

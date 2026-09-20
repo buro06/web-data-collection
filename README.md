@@ -227,6 +227,9 @@ been here before?*
 🔔 My Portfolio
 Page View · 19 Sep 2026 09:32 am CDT
 👤 Michael · 11th visit · since 1 Jul 2026 · ⏱ 2m 14s
+
+📍 Lincoln, Nebraska, United States
+🖧 IP 203.0.113.10 · 5th visit from this IP
 ```
 
 The browser fingerprint (the `🆔` line further down the alert) is a stable,
@@ -298,6 +301,27 @@ so it stays accurate even after old events age out of the capped log.
 Visitors whose fingerprint failed to resolve (blocked scripts, hardened
 privacy settings) show as `👤 No fingerprint` and aren't counted toward
 anyone's history.
+
+### The IP count
+
+The IP address is counted the same way, on the same session window, and shown
+next to the IP in every alert. It's a **second, independent handle** — and
+reading the two together is the point:
+
+| Fingerprint | IP | What it usually means |
+| --- | --- | --- |
+| 11th visit | 5th visit | A regular who connects from more than one network |
+| 1st visit | 5th visit | Probably not a stranger — same household, office or phone, on a new browser |
+| 11th visit | 1st visit | A regular on a new network — travelling, or off wifi |
+
+Unlike the fingerprint, an IP is **never named**. It can't be: everyone behind
+an office router, a carrier's CGNAT or a VPN exit shares one, so the count
+answers *how often this connection has been here*, not *who*. Two different
+people on one office IP will push its count up together — that's correct, and
+it's why the fingerprint remains the identity.
+
+Both counts are stamped onto the event when it's stored (`visit` and
+`ipVisit`), so they stay accurate as the log rotates.
 
 ## 6. Engagement time (how long they actually stayed)
 
@@ -422,6 +446,13 @@ Alongside the enriched request data, each event carries:
     "previousSeen": "2026-09-18T22:40:09.881Z",
     "returning": true
   },
+  "ipVisit": {
+    "number": 5,
+    "eventCount": 12,
+    "firstSeen": "2026-08-02T09:15:44.210Z",
+    "previousSeen": "2026-09-18T22:40:09.881Z",
+    "returning": true
+  },
   "engagementMs": 134000,
   "engagementFinal": true,
   "telegramMessageId": 4821
@@ -430,7 +461,8 @@ Alongside the enriched request data, each event carries:
 
 - `viewId` ties the several events of one page view together, and is what a
   later engagement ping looks up.
-- `visit` is the sessionized visit count as of that event.
+- `visit` and `ipVisit` are the sessionized visit counts, by fingerprint and
+  by IP, as of that event.
 - `telegramMessageId` is the notification this event produced — it's how the
   engagement timer edits the right alert, and how replying to an alert knows
   which visitor you mean.

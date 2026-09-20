@@ -134,6 +134,7 @@ router.post('/track', async (req, res) => {
     engagementMs,
     engagementFinal: false,
     visit: null,
+    ipVisit: null,
     telegramMessageId: null,
     suspicious: botResult.suspicious,
     botFlags: botResult.flags,
@@ -141,9 +142,12 @@ router.post('/track', async (req, res) => {
 
   const outcome = await store.appendEvent(site.id, record, (rec, existing) => {
     if (visits.isDuplicate(existing, rec)) return { skip: true, reason: 'duplicate_view' };
-    // Stamped inside the write lock so the count is right even if two beacons
-    // from this visitor land at the same moment.
-    rec.visit = visits.summarize(existing, rec);
+    // Stamped inside the write lock so the counts are right even if two
+    // beacons from this visitor land at the same moment. The IP is counted as
+    // a second, independent handle: it can show the same person back on a new
+    // browser, or that a "new" fingerprint isn't new at all.
+    rec.visit = visits.summarizeBy(existing, rec, 'fingerprint');
+    rec.ipVisit = visits.summarizeBy(existing, rec, 'ip');
   });
 
   // A re-sent pageview is not a new visit and must not fire a second alert.

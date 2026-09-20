@@ -5,10 +5,22 @@ const { getConfig } = require('./config');
 // been here?" — the question the Telegram notification and the /visits command
 // both answer.
 //
-// A *visit* is a session, not an event: a run of events from the same
-// fingerprint with no gap longer than the session window. Clicking through four
-// pages in one sitting is one visit; coming back tomorrow is two.
+// The same counting runs over two independent handles. The fingerprint
+// identifies the browser; the IP identifies the connection. Neither survives
+// everything — a fingerprint outlives a change of network, an IP outlives a
+// change of browser — so both are counted, and where they disagree that is
+// itself worth seeing.
+//
+// A *visit* is a session, not an event: a run of events sharing that handle
+// with no gap longer than the session window. Clicking through four pages in
+// one sitting is one visit; coming back tomorrow is two.
 const DEFAULT_SESSION_GAP_MINUTES = 30;
+
+// The handles a visitor can be counted by.
+const KEYS = {
+  fingerprint: (event) => event.fingerprint || null,
+  ip: (event) => event.ip || null,
+};
 
 // Two page_view beacons for the same page view are a double-fire, not a second
 // visit. Anything later than this is treated as a real (e.g. SPA) navigation.
@@ -25,9 +37,9 @@ function timeOf(event) {
   return Number.isNaN(t) ? null : t;
 }
 
-function eventsFor(events, fingerprint) {
-  if (!fingerprint) return [];
-  return events.filter((e) => e.fingerprint === fingerprint);
+function eventsMatching(events, keyOf, value) {
+  if (!value) return [];
+  return events.filter((e) => keyOf(e) === value);
 }
 
 function sortedTimes(events) {
@@ -53,13 +65,16 @@ function iso(ms) {
 }
 
 // Stamped onto each record at write time so the visit number is frozen as of
-// that event — it stays correct even after old events age out of the capped log.
-// Returns null when there's no fingerprint to group by.
-function summarize(priorEvents, record) {
-  if (!record.fingerprint) return null;
+// that event — it stays correct even after old events age out of the capped
+// log. `keyName` selects which handle to count by; returns null when the
+// record carries no value for it.
+function summarizeBy(priorEvents, record, keyName) {
+  const keyOf = KEYS[keyName];
+  const value = keyOf ? keyOf(record) : null;
+  if (!value) return null;
 
   const gapMs = sessionGapMs();
-  const mine = eventsFor(priorEvents, record.fingerprint);
+  const mine = eventsMatching(priorEvents, keyOf, value);
   const times = sortedTimes(mine);
   const now = timeOf(record) ?? Date.now();
   const previous = times.length ? times[times.length - 1] : null;
@@ -81,7 +96,7 @@ function summarize(priorEvents, record) {
 // Everything known about one fingerprint on one site. Null when it has never
 // been seen there.
 function statsFor(events, fingerprint) {
-  const mine = eventsFor(events, fingerprint);
+  const mine = eventsMatching(events, KEYS.fingerprint, fingerprint);
   if (!mine.length) return null;
 
   const times = sortedTimes(mine);
@@ -141,6 +156,22 @@ function statsFor(events, fingerprint) {
   };
 }
 
+// Visit count for a handle already present in the log, as opposed to one about
+// to be appended. Used for the IP, which is counted but never named.
+function visitsFor(events, keyName, value) {
+  const keyOf = KEYS[keyName];
+  const mine = keyOf ? eventsMatching(events, keyOf, value) : [];
+  if (!mine.length) return null;
+
+  const times = sortedTimes(mine);
+  return {
+    visitCount: countVisits(times, sessionGapMs()),
+    eventCount: mine.length,
+    firstSeen: iso(times[0]),
+    lastSeen: iso(times[times.length - 1]),
+  };
+}
+
 // Every fingerprint seen on a site, most visits first.
 function topVisitors(events, limit = 10) {
   const byFingerprint = new Map();
@@ -196,4 +227,4 @@ function isDuplicate(events, record) {
   return false;
 }
 
-module.exports = { summarize, statsFor, topVisitors, resolveFingerprint, isDuplicate, countVisits };
+module.exports = { summarizeBy, visitsFor, statsFor, topVisitors, resolveFingerprint, isDuplicate, countVisits };
